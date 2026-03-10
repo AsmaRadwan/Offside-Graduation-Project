@@ -11,8 +11,8 @@ gotrue==2.9.1
 h11==0.14.0
 h2==4.3.0
 hpack==4.1.0
-httpcore==0.18.0
-httpx==0.27.2
+httpcore
+httpx
 hyperframe==6.1.0
 idna==3.11
 lapx==0.9.3

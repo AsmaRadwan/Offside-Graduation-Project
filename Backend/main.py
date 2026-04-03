@@ -3,9 +3,8 @@ from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from pydantic import BaseModel
-from typing import Optional
 
-# 1. Load your Supabase credentials from the .env file
+# Load Supabase credentials from the .env file
 load_dotenv()
 
 url: str = os.environ.get("SUPABASE_URL")
@@ -17,8 +16,7 @@ if not url or not key:
 else:
     supabase: Client = create_client(url, key)
 
-# --- 2. DATA MODELS ---
-
+# Define Data Structures
 class Player(BaseModel):
     player_id: str
     full_name: str
@@ -29,33 +27,41 @@ class Player(BaseModel):
     position: str
     team_id: int
 
-# NEW: Team model for the new endpoint
 class Team(BaseModel):
     team_name: str
-    coach_name: str
-    city: Optional[str] = None  # Optional field in case you want to add location later
 
-# --- 3. INITIALIZE FASTAPI ---
+# Initialize FastAPI
 app = FastAPI(title="OFFSIDE Backend API")
 
 @app.get("/")
 def root():
     return {"message": "OFFSIDE Backend is running!"}
 
-@app.get("/test-connection")
-def test_db():
-    """Check if we can read from the database"""
-    try:
-        response = supabase.table("players").select("*").limit(1).execute()
-        return {"status": "connected", "sample_data": response.data}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+# --- Teams Endpoints ---
 
-# --- 4. PLAYER ENDPOINTS ---
+@app.post("/add-team")
+def add_team(team: Team):
+    """add new team"""
+    try:
+        data = team.dict()
+        response = supabase.table("teams").insert(data).execute()
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/teams")
+def get_teams():
+    """display all teams"""
+    try:
+        response = supabase.table("teams").select("*").execute()
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# --- Players Endpoints ---
 
 @app.post("/register-player")
 def register_player(player: Player):
-    """Receives player data from Flutter and saves it to Supabase."""
     try:
         data = player.dict()
         response = supabase.table("players").insert(data).execute()
@@ -63,9 +69,16 @@ def register_player(player: Player):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/test-connection")
+def test_db():
+    try:
+        response = supabase.table("players").select("*").limit(1).execute()
+        return {"status": "connected", "sample_data": response.data}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/players")
 def get_players():
-    """Fetches all players from the Supabase 'players' table."""
     try:
         response = supabase.table("players").select("*").execute()
         return {"status": "success", "count": len(response.data), "data": response.data}
@@ -82,16 +95,6 @@ def get_player_by_id(player_id: str):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.put("/update-player/{player_id}")
-def update_player(player_id: str, player_updates: dict):
-    try:
-        response = supabase.table("players").update(player_updates).eq("player_id", player_id).execute()
-        if not response.data:
-            raise HTTPException(status_code=404, detail="Player not found to update")
-        return {"status": "success", "message": "Player updated", "data": response.data[0]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
 @app.delete("/delete-player/{player_id}")
 def delete_player(player_id: str):
     try:
@@ -100,31 +103,12 @@ def delete_player(player_id: str):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# --- 5. TEAM ENDPOINTS (NEW) ---
-
-@app.post("/add-team")
-def add_team(team: Team):
-    """
-    Creates a new team in the Supabase 'teams' table.
-    """
+@app.put("/update-player/{player_id}")
+def update_player(player_id: str, player_updates: dict):
     try:
-        # Convert the team object to a dictionary
-        team_data = team.dict()
-        
-        # Insert into the 'teams' table in Supabase
-        response = supabase.table("teams").insert(team_data).execute()
-        
-        return {"status": "success", "message": "Team added successfully", "data": response.data}
-    
-    except Exception as e:
-        # If the table 'teams' doesn't exist yet, this will catch the error
-        raise HTTPException(status_code=400, detail=f"Database Error: {str(e)}")
-
-@app.get("/teams")
-def get_teams():
-    """Fetches all teams available."""
-    try:
-        response = supabase.table("teams").select("*").execute()
-        return {"status": "success", "data": response.data}
+        response = supabase.table("players").update(player_updates).eq("player_id", player_id).execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Player not found to update")
+        return {"status": "success", "message": "Player updated", "data": response.data[0]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

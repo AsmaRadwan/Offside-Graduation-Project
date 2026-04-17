@@ -59,16 +59,12 @@ class MatchResult(BaseModel):
     goals: int
     assists: int
     yellow_card: int
-    red_card: int       # Was missing from original model — exists in DB schema
+    red_card: int
     is_mvp: bool
-    acquisition: float  # Was missing from original model — exists in DB schema
+    acquisition: float
 
 
 class TransferRequest(BaseModel):
-    """
-    Moved player_id out of query params and into a request body
-    to prevent sensitive data being exposed in server logs and URLs.
-    """
     player_id: str
     team_id: int
     tournament_id: int
@@ -82,7 +78,7 @@ class TransferRequest(BaseModel):
 def create_full_profile(user: UserCreate):
     """Creates a User record and returns the new user ID to begin Player profile creation."""
     try:
-        res = supabase.table("users").insert(user.dict()).execute()
+        res = supabase.table("USERS").insert(user.dict()).execute()
         return {"status": "success", "user": res.data[0]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
@@ -92,7 +88,7 @@ def create_full_profile(user: UserCreate):
 def complete_player_profile(profile: PlayerProfile):
     """Links the User account to an athletic Player profile."""
     try:
-        res = supabase.table("players").insert(profile.dict()).execute()
+        res = supabase.table("PLAYERS").insert(profile.dict()).execute()
         return {"status": "success", "profile": res.data[0]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -106,7 +102,7 @@ def complete_player_profile(profile: PlayerProfile):
 def list_teams():
     """Returns all teams and their kit colors for the join-team selection screen."""
     try:
-        res = supabase.table("teams").select("team_id, team_name, tshirt_colors").execute()
+        res = supabase.table("TEAMS").select("team_id, team_name, tshirt_colors").execute()
         return {"status": "success", "teams": res.data}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -116,7 +112,7 @@ def list_teams():
 def get_team_details(team_id: int):
     """Returns full details and aggregate stats for a single team."""
     try:
-        res = supabase.table("teams").select("*").eq("team_id", team_id).single().execute()
+        res = supabase.table("TEAMS").select("*").eq("team_id", team_id).single().execute()
         return {"status": "success", "team": res.data}
     except Exception as e:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -130,7 +126,7 @@ def get_team_details(team_id: int):
 def get_tournaments():
     """Fetches all tournaments and their associated matches."""
     try:
-        res = supabase.table("tournaments").select("*, matches(*)").execute()
+        res = supabase.table("TOURNAMENTS").select("*, MATCHES(*)").execute()
         return {"status": "success", "data": res.data}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -140,8 +136,8 @@ def get_tournaments():
 def get_match_details(match_id: int):
     """Returns full details of a single match, including both team stats."""
     try:
-        res = supabase.table("matches").select(
-            "*, team_match_stats(*)"
+        res = supabase.table("MATCHES").select(
+            "*, TEAM_MATCH_STATS(*)"
         ).eq("match_id", match_id).single().execute()
         return {"status": "success", "match": res.data}
     except Exception as e:
@@ -149,21 +145,21 @@ def get_match_details(match_id: int):
 
 
 # ============================================================
-# --- 4. Match Result Submission (Was missing in original) ---
+# --- 4. Match Result Submission ---
 # ============================================================
 
 @app.post("/api/v1/matches/result")
 def submit_match_result(result: MatchResult):
     """
     Submits a player's stats for a specific match and automatically
-    updates their cumulative career totals on the players table.
+    updates their cumulative career totals on the PLAYERS table.
     """
     try:
         # Step 1: Insert the per-match stats row
-        supabase.table("player_match_stats").insert(result.dict()).execute()
+        supabase.table("PLAYER_MATCH_STATS").insert(result.dict()).execute()
 
         # Step 2: Fetch current career totals for this player
-        player_res = supabase.table("players").select(
+        player_res = supabase.table("PLAYERS").select(
             "total_goals, total_assists, total_yellow_card, total_red_card, total_appearance, total_acquisition"
         ).eq("player_id", result.player_id).single().execute()
 
@@ -179,8 +175,8 @@ def submit_match_result(result: MatchResult):
             "total_acquisition": round(player["total_acquisition"] + result.acquisition, 2),
         }
 
-        # Step 4: Write updated totals back to the players table
-        supabase.table("players").update(updated_totals).eq("player_id", result.player_id).execute()
+        # Step 4: Write updated totals back to the PLAYERS table
+        supabase.table("PLAYERS").update(updated_totals).eq("player_id", result.player_id).execute()
 
         return {"status": "success", "message": "Match result submitted and career stats updated."}
     except Exception as e:
@@ -195,7 +191,7 @@ def submit_match_result(result: MatchResult):
 def get_player_stats(player_id: str):
     """Returns the aggregated career totals for the Player's profile/scout card dashboard."""
     try:
-        res = supabase.table("players").select(
+        res = supabase.table("PLAYERS").select(
             "full_name, position, jersey_number, nationality, height, weight, "
             "total_goals, total_assists, total_appearance, total_acquisition, "
             "total_yellow_card, total_red_card, highest_speed, total_destination"
@@ -209,9 +205,9 @@ def get_player_stats(player_id: str):
 def get_player_match_history(player_id: str):
     """Returns a full history of every match this player has participated in."""
     try:
-        res = supabase.table("player_match_stats").select(
+        res = supabase.table("PLAYER_MATCH_STATS").select(
             "goals, assists, yellow_card, red_card, is_mvp, acquisition, "
-            "heatmap_image_url, matches(match_date, tournament_id, video_url)"
+            "heatmap_image_url, MATCHES(match_date, tournament_id, video_url)"
         ).eq("player_id", player_id).execute()
         return {"status": "success", "history": res.data}
     except Exception as e:
@@ -230,7 +226,7 @@ def record_team_transfer(transfer: TransferRequest):
     """
     try:
         # Step 1: Update the player's current active team
-        supabase.table("players").update(
+        supabase.table("PLAYERS").update(
             {"team_id": transfer.team_id}
         ).eq("player_id", transfer.player_id).execute()
 
@@ -240,7 +236,7 @@ def record_team_transfer(transfer: TransferRequest):
             "team_id":       transfer.team_id,
             "tournament_id": transfer.tournament_id,
         }
-        supabase.table("team_members_history").insert(history_entry).execute()
+        supabase.table("TEAM_MEMBERS_HISTORY").insert(history_entry).execute()
 
         return {"status": "success", "message": "Transfer recorded successfully."}
     except Exception as e:
@@ -251,8 +247,8 @@ def record_team_transfer(transfer: TransferRequest):
 def get_player_team_history(player_id: str):
     """Returns the full list of teams a player has been part of across tournaments."""
     try:
-        res = supabase.table("team_members_history").select(
-            "history_id, teams(team_name, tshirt_colors), tournaments(tournament_name, start_date, end_date)"
+        res = supabase.table("TEAM_MEMBERS_HISTORY").select(
+            "history_id, TEAMS(team_name, tshirt_colors), TOURNAMENTS(tournament_name, start_date, end_date)"
         ).eq("player_id", player_id).execute()
         return {"status": "success", "history": res.data}
     except Exception as e:

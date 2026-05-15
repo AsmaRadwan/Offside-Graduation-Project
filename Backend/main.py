@@ -1,6 +1,7 @@
 import os
+import uuid
 from typing import Optional, List, Dict
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -47,9 +48,9 @@ class PlayerProfile(BaseModel):
 
 class TeamCreate(BaseModel):
     team_name: str
-    primary_tshirt_colors: str      # e.g. "#FF0000"
-    secondary_tshirt_colors: str    # e.g. "#FFFFFF"
-    goalkeeper_tshirt_colors: str   # e.g. "#000000"
+    primary_tshirt_colors: str
+    secondary_tshirt_colors: str
+    goalkeeper_tshirt_colors: str
 
 class MatchResult(BaseModel):
     match_id: int
@@ -85,7 +86,27 @@ class InvitationSend(BaseModel):
 
 class InvitationAction(BaseModel):
     invitation_id: int
-    # No team_id/player_id needed here, we'll get them from the invitation record
+
+# --- Requirement 3: Edit Profile Schemas ---
+class UpdatePlayerProfile(BaseModel):
+    full_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    jersey_number: Optional[int] = None
+    position: Optional[str] = None
+    nationality: Optional[str] = None
+    height: Optional[float] = None
+    weight: Optional[float] = None
+
+class UpdateUserProfile(BaseModel):
+    name: Optional[str] = None
+    phone_number: Optional[str] = None
+    nationality: Optional[str] = None
+
+# --- Requirement 4: Favourites Schema ---
+class FavouriteAdd(BaseModel):
+    player_id: int
+    entity_type: str  # "player", "team", or "tournament"
+    entity_id: int
 
 # --- AI Model Integration Schemas ---
 class PlayerAIStat(BaseModel):
@@ -95,7 +116,7 @@ class PlayerAIStat(BaseModel):
     top_speed: float
 
 class TeamAIStat(BaseModel):
-    possession: Dict[str, float]  # {"Red Team": 60.0, "Green Team": 40.0}
+    possession: Dict[str, float]
     passes_red: int
     passes_green: int
     interceptions_red: int
@@ -105,7 +126,8 @@ class AIMatchResult(BaseModel):
     match_id: int
     team_stats: TeamAIStat
     player_stats: List[PlayerAIStat]
-    heatmap_urls: Dict[str, str] # {"Player Name": "public_url"}
+    heatmap_urls: Dict[str, str]
+
 
 # ============================================================
 # --- 1. User & Player Onboarding ---
@@ -115,21 +137,21 @@ class AIMatchResult(BaseModel):
 def create_user_profile(user: UserCreate):
     """Creates a standalone User record."""
     try:
-        # Note: id is now auto-generated (Identity) in Supabase
         res = supabase.table("USERS").insert(user.dict()).execute()
         return {"status": "success", "user": res.data[0]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Registration failed: {str(e)}")
 
+
 @app.post("/api/v1/players/profile")
 def complete_player_profile(profile: PlayerProfile):
     """Creates a standalone athletic Player profile."""
     try:
-        # Note: player_id is now auto-generated in Supabase
         res = supabase.table("PLAYERS").insert(profile.dict()).execute()
         return {"status": "success", "profile": res.data[0]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 # ============================================================
 # --- 2. Team Management ---
@@ -137,12 +159,13 @@ def complete_player_profile(profile: PlayerProfile):
 
 @app.post("/api/v1/teams")
 def create_team(team: TeamCreate):
-    """Creates a new team. Colors are strings matching the schema."""
+    """Creates a new team."""
     try:
         res = supabase.table("TEAMS").insert(team.dict()).execute()
         return {"status": "success", "team": res.data[0]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.get("/api/v1/teams/discover")
 def list_teams():
@@ -155,6 +178,7 @@ def list_teams():
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.get("/api/v1/teams/{team_id}")
 def get_team_details(team_id: int):
     """Returns full details and aggregate stats for a single team."""
@@ -164,6 +188,7 @@ def get_team_details(team_id: int):
     except Exception as e:
         raise HTTPException(status_code=404, detail="Team not found")
 
+
 # ============================================================
 # --- 3. Tournament Management ---
 # ============================================================
@@ -172,11 +197,11 @@ def get_team_details(team_id: int):
 def get_tournaments():
     """Fetches all tournaments and their associated matches."""
     try:
-        # Complex join: Tournament -> Matches
         res = supabase.table("TOURNAMENTS").select("*, MATCHES(*)").execute()
         return {"status": "success", "data": res.data}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 # ============================================================
 # --- 4. Match Flow ---
@@ -186,7 +211,6 @@ def get_tournaments():
 def get_match_details(match_id: int):
     """Returns full details of a single match, including team and player stats."""
     try:
-        # Complex join: Match -> Team Stats, Player Stats
         res = supabase.table("MATCHES").select(
             "*, TEAM_MATCH_STATS(*), PLAYER_MATCH_STATS(*)"
         ).eq("match_id", match_id).single().execute()
@@ -194,22 +218,17 @@ def get_match_details(match_id: int):
     except Exception as e:
         raise HTTPException(status_code=404, detail="Match not found")
 
+
 # ============================================================
 # --- 5. Match Result Submission & Career Sync ---
 # ============================================================
 
 @app.post("/api/v1/matches/result")
 def submit_match_result(result: MatchResult):
-    """
-    Submits manual player stats and heatmaps after a match.
-    Updates the player's cumulative career totals on the PLAYERS table.
-    This handles manual entry (Goals/Assists).
-    """
+    """Submits manual player stats after a match and updates career totals."""
     try:
-        # Step 1: Insert the per-match stats row
         supabase.table("PLAYER_MATCH_STATS").insert(result.dict()).execute()
 
-        # Step 2: Fetch current career totals for this player
         player_res = supabase.table("PLAYERS").select(
             "total_goals, total_assists, total_yellow_card, total_red_card, "
             "total_appearance, total_acquisition, highest_speed, total_destination"
@@ -217,7 +236,6 @@ def submit_match_result(result: MatchResult):
 
         player = player_res.data
 
-        # Step 3: Calculate updated career totals
         updated_totals = {
             "total_goals":       player["total_goals"] + result.goals,
             "total_assists":     player["total_assists"] + result.assists,
@@ -227,30 +245,27 @@ def submit_match_result(result: MatchResult):
             "total_acquisition": round(player["total_acquisition"] + result.acquisition, 2),
         }
 
-        # Update highest speed if new record
         if result.top_speed and result.top_speed > (player["highest_speed"] or 0.0):
             updated_totals["highest_speed"] = result.top_speed
 
-        # Accumulate total distance
         if result.total_distance:
             updated_totals["total_destination"] = round(
                 (player["total_destination"] or 0.0) + result.total_distance, 2
             )
 
-        # Step 4: Write updated totals back to the PLAYERS table
         supabase.table("PLAYERS").update(updated_totals).eq("player_id", result.player_id).execute()
 
         return {"status": "success", "message": "Match result submitted and career stats updated."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.post("/api/v1/matches/team-stats")
 def submit_team_match_stats(stats: TeamMatchStats):
-    """Submits team-level stats for a specific match (manual corner/foul entry)."""
+    """Submits team-level stats for a specific match."""
     try:
         supabase.table("TEAM_MATCH_STATS").insert(stats.dict()).execute()
 
-        # Update team aggregate totals for Goals/Passes
         team_res = supabase.table("TEAMS").select(
             "total_goals, total_passes"
         ).eq("team_id", stats.team_id).single().execute()
@@ -258,31 +273,33 @@ def submit_team_match_stats(stats: TeamMatchStats):
         team = team_res.data
 
         supabase.table("TEAMS").update({
-            "total_goals":   team["total_goals"] + stats.goals,
-            "total_passes":  team["total_passes"] + stats.passes,
+            "total_goals":  team["total_goals"] + stats.goals,
+            "total_passes": team["total_passes"] + stats.passes,
         }).eq("team_id", stats.team_id).execute()
 
         return {"status": "success", "message": "Team match stats submitted."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 # ============================================================
-# --- 6. Statistics & Scout Cards (The Core Value) ---
+# --- 6. Statistics & Scout Cards ---
 # ============================================================
 
 @app.get("/api/v1/players/{player_id}/scout-card")
 def get_player_stats(player_id: int):
-    """Returns the aggregated career totals for the Player's profile/scout card dashboard."""
+    """Returns the aggregated career totals for the Player's scout card dashboard."""
     try:
         res = supabase.table("PLAYERS").select(
             "full_name, position, jersey_number, nationality, height, weight, "
             "total_goals, total_assists, total_appearance, total_acquisition, "
             "total_yellow_card, total_red_card, highest_speed, total_destination, "
-            "email, phone_number, team_id"
+            "email, phone_number, team_id, profile_picture_url"
         ).eq("player_id", player_id).single().execute()
         return {"status": "success", "stats": res.data}
     except Exception as e:
         raise HTTPException(status_code=404, detail="Player not found")
+
 
 # ============================================================
 # --- 7. Team Transitions (History Management) ---
@@ -290,17 +307,12 @@ def get_player_stats(player_id: int):
 
 @app.post("/api/v1/players/transfer")
 def record_team_transfer(transfer: TransferRequest):
-    """
-    Updates the player's active team and records the move in team history.
-    This also updates the historical history_id to be auto-generated.
-    """
+    """Updates the player's active team and records the move in team history."""
     try:
-        # Step 1: Update the player's current active team
         supabase.table("PLAYERS").update(
             {"team_id": transfer.team_id}
         ).eq("player_id", transfer.player_id).execute()
 
-        # Step 2: Record the transfer in the history table
         history_entry = {
             "player_id":     transfer.player_id,
             "team_id":       transfer.team_id,
@@ -311,24 +323,21 @@ def record_team_transfer(transfer: TransferRequest):
         return {"status": "success", "message": "Transfer recorded successfully."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
+
 # ============================================================
-# --- 8. Team Invitation System  ---
+# --- 8. Team Invitation System ---
 # ============================================================
 
 @app.post("/api/v1/invitations/send")
 def send_team_invitation(invite: InvitationSend):
-    """
-    Step 1: Team manager sends an invitation to a player.
-    The status defaults to 'pending' in Supabase.
-    """
+    """Team manager sends an invitation to a player."""
     try:
-        # Check if an invitation already exists to prevent spam
         existing = supabase.table("INVITATIONS").select("*")\
             .eq("team_id", invite.team_id)\
             .eq("player_id", invite.player_id)\
             .eq("status", "pending").execute()
-        
+
         if existing.data:
             return {"status": "error", "message": "An invitation is already pending for this player."}
 
@@ -340,27 +349,19 @@ def send_team_invitation(invite: InvitationSend):
 
 @app.post("/api/v1/invitations/accept")
 def accept_invitation(action: InvitationAction):
-    """
-    Step 2: Player accepts. 
-    This triggers two actions:
-    1. Update invitation status to 'accepted'.
-    2. Update the PLAYER table to set their team_id.
-    """
+    """Player accepts an invitation and joins the team."""
     try:
-        # 1. Fetch invitation details
         invite_res = supabase.table("INVITATIONS").select("*")\
             .eq("invitation_id", action.invitation_id).single().execute()
-        
+
         if not invite_res.data:
             raise HTTPException(status_code=404, detail="Invitation not found")
-        
+
         invite = invite_res.data
 
-        # 2. Update player's team in the PLAYERS table
         supabase.table("PLAYERS").update({"team_id": invite["team_id"]})\
             .eq("player_id", invite["player_id"]).execute()
 
-        # 3. Mark invitation as accepted
         supabase.table("INVITATIONS").update({"status": "accepted"})\
             .eq("invitation_id", action.invitation_id).execute()
 
@@ -371,7 +372,7 @@ def accept_invitation(action: InvitationAction):
 
 @app.post("/api/v1/invitations/decline")
 def decline_invitation(action: InvitationAction):
-    """Step 3: Player declines. Just update status to 'declined'."""
+    """Player declines an invitation."""
     try:
         supabase.table("INVITATIONS").update({"status": "declined"})\
             .eq("invitation_id", action.invitation_id).execute()
@@ -382,7 +383,7 @@ def decline_invitation(action: InvitationAction):
 
 @app.get("/api/v1/players/{player_id}/invitations")
 def get_my_invitations(player_id: int):
-    """Allows the Flutter app to show a 'Notifications' list for the player."""
+    """Returns all pending invitations for a player."""
     try:
         res = supabase.table("INVITATIONS").select("*, TEAMS(team_name)")\
             .eq("player_id", player_id)\
@@ -391,20 +392,15 @@ def get_my_invitations(player_id: int):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 # ============================================================
 # --- 9. AI Model Integration ---
 # ============================================================
 
 @app.post("/api/v1/ai/analyze-match/{match_id}")
 def receive_ai_results(match_id: int, result: AIMatchResult):
-    """
-    Receives automated analysis results from the AI pipeline.
-    Saves team possession/passes to TEAM_MATCH_STATS.
-    Saves heatmap URLs, speed, and distance to PLAYER_MATCH_STATS
-    by matching player names.
-    """
+    """Receives AI analysis results and saves them to Supabase."""
     try:
-        # Step 1: Identify both teams in the match
         match_res = supabase.table("MATCHES").select(
             "home_team_id, away_team_id"
         ).eq("match_id", match_id).single().execute()
@@ -412,18 +408,16 @@ def receive_ai_results(match_id: int, result: AIMatchResult):
         home_team_id = match_res.data["home_team_id"]
         away_team_id = match_res.data["away_team_id"]
 
-        # Step 2: Save team match stats for home team (Red)
         supabase.table("TEAM_MATCH_STATS").insert({
             "match_id": match_id,
             "team_id": home_team_id,
-            "goals": 0,  # Entered manually
+            "goals": 0,
             "passes": result.team_stats.passes_red,
             "foul": 0,
             "corner": 0,
             "acquisition_avg": result.team_stats.possession.get("Red Team", 0.0)
         }).execute()
 
-        # Step 3: Save team match stats for away team (Green)
         supabase.table("TEAM_MATCH_STATS").insert({
             "match_id": match_id,
             "team_id": away_team_id,
@@ -434,29 +428,24 @@ def receive_ai_results(match_id: int, result: AIMatchResult):
             "acquisition_avg": result.team_stats.possession.get("Green Team", 0.0)
         }).execute()
 
-        # Step 4: Map AI Player data to Database Players
         for p_ai in result.player_stats:
-            # Skip unidentified players
             if not p_ai.player_name or p_ai.player_name in ("Unknown", "Identifying..."):
                 continue
 
-            # Find player by full_name in PLAYERS table
             player_res = supabase.table("PLAYERS").select("player_id").ilike(
                 "full_name", f"%{p_ai.player_name}%"
             ).execute()
 
             if not player_res.data:
-                continue # No player found by that name
+                continue
 
             player_id = player_res.data[0]["player_id"]
-
-            # Step 5: Save AI data (Heatmaps, Speed, Dist) to per-match stats table
             heatmap_url = result.heatmap_urls.get(p_ai.player_name)
 
             supabase.table("PLAYER_MATCH_STATS").insert({
                 "match_id": match_id,
                 "player_id": player_id,
-                "goals": 0, # Manual entry
+                "goals": 0,
                 "assists": 0,
                 "yellow_card": 0,
                 "red_card": 0,
@@ -467,17 +456,16 @@ def receive_ai_results(match_id: int, result: AIMatchResult):
                 "heatmap_image_url": heatmap_url
             }).execute()
 
-            # Step 6: Update cumulative career totals (Highest Speed, Total Distance)
             career_res = supabase.table("PLAYERS").select(
                 "highest_speed, total_destination"
             ).eq("player_id", player_id).single().execute()
 
             career = career_res.data
-
             updated_career = {}
+
             if p_ai.top_speed > (career["highest_speed"] or 0.0):
                 updated_career["highest_speed"] = p_ai.top_speed
-            
+
             if p_ai.total_distance:
                 updated_career["total_destination"] = round(
                     (career["total_destination"] or 0.0) + p_ai.total_distance, 2
@@ -494,5 +482,155 @@ def receive_ai_results(match_id: int, result: AIMatchResult):
             "players_mapped": len(result.player_stats)
         }
 
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================
+# --- 10. Profile Picture Upload (Requirement 2) ---
+# ============================================================
+
+@app.post("/api/v1/players/{player_id}/upload-photo")
+async def upload_profile_picture(player_id: int, file: UploadFile = File(...)):
+    """
+    Uploads a player's profile picture to Supabase Storage (avatars bucket)
+    and saves the public URL to the PLAYERS table.
+    Requires: Supabase Storage bucket named 'avatars' set to Public.
+    """
+    try:
+        # Read file bytes
+        file_bytes = await file.read()
+
+        # Generate a unique filename to avoid collisions
+        ext = file.filename.split(".")[-1]
+        filename = f"player_{player_id}_{uuid.uuid4().hex}.{ext}"
+
+        # Upload to Supabase Storage
+        supabase.storage.from_("avatars").upload(
+            path=filename,
+            file=file_bytes,
+            file_options={"content-type": file.content_type}
+        )
+
+        # Get the public URL
+        public_url = supabase.storage.from_("avatars").get_public_url(filename)
+
+        # Save the URL to the PLAYERS table
+        supabase.table("PLAYERS").update(
+            {"profile_picture_url": public_url}
+        ).eq("player_id", player_id).execute()
+
+        return {"status": "success", "profile_picture_url": public_url}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================
+# --- 11. Edit Profile (Requirement 3) ---
+# ============================================================
+
+@app.patch("/api/v1/players/{player_id}")
+def update_player_profile(player_id: int, updates: UpdatePlayerProfile):
+    """
+    Updates only the fields that are provided — leaves all others unchanged.
+    Flutter sends only the fields the user edited.
+    """
+    try:
+        # Filter out None values so we only update what was actually sent
+        data = {k: v for k, v in updates.dict().items() if v is not None}
+
+        if not data:
+            raise HTTPException(status_code=400, detail="No fields to update.")
+
+        res = supabase.table("PLAYERS").update(data)\
+            .eq("player_id", player_id).execute()
+
+        return {"status": "success", "updated": res.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.patch("/api/v1/users/{user_id}")
+def update_user_profile(user_id: int, updates: UpdateUserProfile):
+    """Updates user account info — only provided fields are changed."""
+    try:
+        data = {k: v for k, v in updates.dict().items() if v is not None}
+
+        if not data:
+            raise HTTPException(status_code=400, detail="No fields to update.")
+
+        res = supabase.table("USERS").update(data)\
+            .eq("user_id", user_id).execute()
+
+        return {"status": "success", "updated": res.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================
+# --- 12. Favourites System (Requirement 4) ---
+# ============================================================
+
+@app.post("/api/v1/favourites")
+def add_favourite(fav: FavouriteAdd):
+    """
+    Adds a player, team, or tournament to the user's favourites.
+    entity_type must be one of: 'player', 'team', 'tournament'
+    """
+    try:
+        res = supabase.table("FAVOURITES").insert(fav.dict()).execute()
+        return {"status": "success", "favourite": res.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/v1/favourites")
+def remove_favourite(fav: FavouriteAdd):
+    """Removes an item from favourites (unfavourite action)."""
+    try:
+        supabase.table("FAVOURITES").delete()\
+            .eq("player_id", fav.player_id)\
+            .eq("entity_type", fav.entity_type)\
+            .eq("entity_id", fav.entity_id).execute()
+        return {"status": "success", "message": "Removed from favourites."}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/players/{player_id}/favourites")
+def get_my_favourites(player_id: int):
+    """
+    Returns all favourites for a player grouped by type.
+    Response: {"player": [1,2], "team": [3], "tournament": [1]}
+    Flutter uses this to render the favourites screen.
+    """
+    try:
+        res = supabase.table("FAVOURITES").select("*")\
+            .eq("player_id", player_id).execute()
+
+        # Group by entity_type for easier consumption in Flutter
+        grouped: Dict[str, List[int]] = {"player": [], "team": [], "tournament": []}
+        for fav in res.data:
+            entity_type = fav["entity_type"]
+            if entity_type in grouped:
+                grouped[entity_type].append(fav["entity_id"])
+
+        return {"status": "success", "favourites": grouped}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/players/{player_id}/favourites/{entity_type}/{entity_id}")
+def check_is_favourite(player_id: int, entity_type: str, entity_id: int):
+    """
+    Checks if a specific item is favourited.
+    Flutter uses this to set the heart icon state (filled/empty).
+    """
+    try:
+        res = supabase.table("FAVOURITES").select("favourite_id")\
+            .eq("player_id", player_id)\
+            .eq("entity_type", entity_type)\
+            .eq("entity_id", entity_id).execute()
+        return {"status": "success", "is_favourite": len(res.data) > 0}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

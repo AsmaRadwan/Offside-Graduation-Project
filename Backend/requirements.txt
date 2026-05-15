@@ -5,3 +5,5 @@ python-dotenv==1.0.1
 pydantic==2.10.6
 httpx==0.28.1
 python-multipart==0.0.9
+python-jose==3.3.0
+passlib==1.7.4

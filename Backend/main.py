@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from pydantic import BaseModel
+from fastapi import Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 load_dotenv()
 
@@ -487,7 +489,7 @@ def receive_ai_results(match_id: int, result: AIMatchResult):
 
 
 # ============================================================
-# --- 10. Profile Picture Upload (Requirement 2) ---
+# --- 10. Profile Picture Upload 
 # ============================================================
 
 @app.post("/api/v1/players/{player_id}/upload-photo")
@@ -526,7 +528,7 @@ async def upload_profile_picture(player_id: int, file: UploadFile = File(...)):
 
 
 # ============================================================
-# --- 11. Edit Profile (Requirement 3) ---
+# --- 11. Edit Profile 
 # ============================================================
 
 @app.patch("/api/v1/players/{player_id}")
@@ -568,7 +570,7 @@ def update_user_profile(user_id: int, updates: UpdateUserProfile):
 
 
 # ============================================================
-# --- 12. Favourites System (Requirement 4) ---
+# --- 12. Favourites System 
 # ============================================================
 
 @app.post("/api/v1/favourites")
@@ -632,5 +634,92 @@ def check_is_favourite(player_id: int, entity_type: str, entity_id: int):
             .eq("entity_type", entity_type)\
             .eq("entity_id", entity_id).execute()
         return {"status": "success", "is_favourite": len(res.data) > 0}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+# ============================================================
+# --- 13. Database Authentication
+# ============================================================
+security = HTTPBearer()
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    name: str
+    nationality: str
+    phone_number: str
+
+@app.post("/api/v1/auth/signup")
+def signup(req: SignupRequest):
+    """
+    Creates a Supabase Auth account (handles password hashing)
+    then creates the USERS record.
+    """
+    try:
+        # Step 1: Create auth account in Supabase Auth
+        auth_res = supabase.auth.sign_up({
+            "email": req.email,
+            "password": req.password
+        })
+
+        if not auth_res.user:
+            raise HTTPException(status_code=400, detail="Signup failed")
+
+        auth_uid = auth_res.user.id  # This is the UUID from Supabase Auth
+
+        # Step 2: Create the USERS record linked to the auth account
+        supabase.table("USERS").insert({
+            "auth_uid": auth_uid,   # ← need to add this column
+            "name": req.name,
+            "email": req.email,
+            "nationality": req.nationality,
+            "phone_number": req.phone_number
+        }).execute()
+
+        return {
+            "status": "success",
+            "message": "Account created. Please verify your email.",
+            "user_id": auth_uid
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/v1/auth/login")
+def login(req: LoginRequest):
+    """
+    Authenticates a user and returns a JWT token.
+    Flutter stores this token and sends it with every request.
+    """
+    try:
+        auth_res = supabase.auth.sign_in_with_password({
+            "email": req.email,
+            "password": req.password
+        })
+
+        if not auth_res.user:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        return {
+            "status": "success",
+            "access_token": auth_res.session.access_token,
+            "token_type": "bearer",
+            "user_id": auth_res.user.id,
+            "email": auth_res.user.email
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+
+@app.post("/api/v1/auth/logout")
+def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Invalidates the current session token."""
+    try:
+        supabase.auth.sign_out()
+        return {"status": "success", "message": "Logged out successfully."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
